@@ -3,33 +3,9 @@ package main
 import (
 	_ "embed"
 	"log"
-	"os"
-	"path/filepath"
 
 	"github.com/mxschmitt/playwright-go"
 )
-
-func getHtmlFileUrl() string {
-	return getPageFileURL("input.html")
-}
-
-func getPageFileURL(fileName string) string {
-	wd, err := os.Getwd()
-	if err != nil {
-		log.Fatalf("could not get work dir: %v", err)
-	}
-
-	fullPath := filepath.Join(wd, "pages", fileName)
-	slashPath := filepath.ToSlash(fullPath)
-
-	// Windows paths don't start with a slash, so add file:///
-	// macOS/Linux paths start with a slash, so add file://
-	if os.PathSeparator == '\\' {
-		return "file:///" + slashPath
-	}
-
-	return "file://" + slashPath
-}
 
 func OpenInputWindow() (string, bool) {
 	runOption := &playwright.RunOptions{
@@ -46,7 +22,7 @@ func OpenInputWindow() (string, bool) {
 		return "", false
 	}
 	defer pw.Stop()
-	
+
 	option := playwright.BrowserTypeLaunchOptions{
 		Channel:  playwright.String("chrome"),
 		Headless: playwright.Bool(false),
@@ -73,9 +49,8 @@ func OpenInputWindow() (string, bool) {
 		log.Printf("could not create page: %v", err)
 		return "", false
 	}
-	_, err = page.Goto(getHtmlFileUrl())
-	if err != nil {
-		log.Printf("could not goto input page: %v", err)
+	if err := page.SetContent(string(inputPage)); err != nil {
+		log.Printf("could not load input page: %v", err)
 		return "", false
 	}
 
@@ -332,3 +307,6 @@ func configNumber(value interface{}) (float64, bool) {
 
 //go:embed pages/config.html
 var configPage []byte
+
+//go:embed pages/input.html
+var inputPage []byte
