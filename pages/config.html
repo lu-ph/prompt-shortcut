@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Prompt Templates</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #0f0f0f;
+            color: #e0e0e0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding: 32px 15%; /* Centered and constrained to match the screenshot vibe */
+            gap: 24px;
+        }
+        h1 {
+            font-size: 22px;
+            font-weight: 600;
+            color: #fff;
+        }
+        #list {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        
+        /* Hide scrollbar for the main list as well for a cleaner look */
+        #list::-webkit-scrollbar { display: none; }
+        #list { -ms-overflow-style: none; scrollbar-width: none; }
+
+        .card {
+            background: #191919; /* Subtle contrast with background */
+            border-radius: 8px;
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            border: none; /* 4. Removed UI box border line */
+        }
+        .card-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .select-template {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            color: #888;
+            cursor: pointer;
+        }
+        textarea {
+            width: 100%;
+            min-height: 60px;
+            background: transparent;
+            border: none; /* 4. Removed text box border */
+            color: #d4d4d4;
+            padding: 0;
+            resize: none; 
+            overflow: hidden; /* 2. Removed the ugly white scrollbar */
+            font-family: Consolas, monospace; /* 3. Consolas font */
+            font-size: 13.5px;
+            line-height: 1.6;
+        }
+        textarea:focus {
+            outline: none;
+            color: #fff;
+        }
+        .btn {
+            cursor: pointer;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            font-size: 13px;
+            background: #2a2a2a;
+            color: #aaa;
+            transition: 0.2s;
+        }
+        .btn:hover { background: #333; color: #fff; }
+        .btn-delete {
+            background: transparent;
+            color: #a35252;
+            margin-left: auto;
+            padding: 4px 8px;
+        }
+        .btn-delete:hover { background: transparent; color: #ff6b6b; }
+        .toolbar {
+            display: flex;
+            gap: 12px;
+            justify-content: space-between;
+            align-items: center;
+        }
+        #save-status { color: #777; font-size: 13px; }
+        #save-status.error { color: #ff6b6b; }
+        .empty {
+            color: #555;
+            text-align: center;
+            padding: 40px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Prompt Templates</h1>
+
+    <div id="list"></div>
+
+    <div class="toolbar">
+        <span id="save-status" role="status" aria-live="polite">Loading...</span>
+        <button class="btn btn-add" onclick="addCard()">+ Add</button>
+    </div>
+
+    <script>
+        let configs = [];
+        let selectedIndex = 0;
+        let saveTimer = null;
+        let activeSave = null;
+        let changeVersion = 0;
+        let isLoaded = false;
+
+        function setSaveStatus(message, isError = false) {
+            const status = document.getElementById('save-status');
+            status.textContent = message;
+            status.classList.toggle('error', isError);
+        }
+
+        function validateConfigs() {
+            const indexes = configs.map(config => config.Index);
+            if (indexes.some(index => !Number.isInteger(index) || index < 1)) {
+                return 'Indexes must be positive whole numbers.';
+            }
+            if (new Set(indexes).size !== indexes.length) {
+                return 'Duplicate indexes are not allowed.';
+            }
+            if (configs.length > 0 && !configs.some(config => config.Index === selectedIndex)) {
+                return 'Select a template to use.';
+            }
+            if (configs.length === 0 && selectedIndex !== 0) {
+                return 'No template can be selected when the list is empty.';
+            }
+            return '';
+        }
+
+        function requestSave() {
+            changeVersion++;
+            setSaveStatus('Unsaved changes');
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(() => {
+                flushSave();
+            }, 350);
+        }
+
+        async function flushSave() {
+            clearTimeout(saveTimer);
+            saveTimer = null;
+
+            if (!isLoaded) {
+                setSaveStatus('Configurations are still loading.', true);
+                return false;
+            }
+
+            if (activeSave) {
+                await activeSave;
+                return flushSave();
+            }
+
+            const validationError = validateConfigs();
+            if (validationError) {
+                setSaveStatus(validationError, true);
+                return false;
+            }
+
+            const version = changeVersion;
+            const snapshot = {
+                SelectedIndex: selectedIndex,
+                Configs: configs.map(config => ({
+                    Index: config.Index,
+                    PromptTemplate: config.PromptTemplate
+                }))
+            };
+
+            const operation = (async () => {
+                try {
+                    const result = await window.saveConfigs(snapshot);
+                    if (!result || !result.ok) {
+                        throw new Error((result && result.error) || 'Unknown save error');
+                    }
+                    return true;
+                } catch (error) {
+                    if (version === changeVersion) {
+                        setSaveStatus('Save failed: ' + error, true);
+                    }
+                    return false;
+                }
+            })();
+
+            activeSave = operation;
+            const saved = await operation;
+            if (activeSave === operation) {
+                activeSave = null;
+            }
+
+            if (saved && version !== changeVersion) {
+                return flushSave();
+            }
+            if (saved && version === changeVersion) {
+                setSaveStatus('All changes saved');
+            }
+            return saved;
+        }
+
+        async function load() {
+            const list = document.getElementById('list');
+            try {
+                const settings = await window.loadConfigs();
+                configs = settings.Configs || [];
+                selectedIndex = settings.SelectedIndex || (configs[0] && configs[0].Index) || 0;
+                if (!configs.some(config => config.Index === selectedIndex) && configs.length > 0) {
+                    selectedIndex = configs[0].Index;
+                }
+                render();
+                isLoaded = true;
+                setSaveStatus('All changes saved');
+            } catch (error) {
+                list.textContent = 'Could not load configurations: ' + error;
+                setSaveStatus('Could not load configurations', true);
+            }
+        }
+
+        function render() {
+            const list = document.getElementById('list');
+            list.replaceChildren();
+
+            if (!configs || configs.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'empty';
+                empty.textContent = 'No templates yet. Click “+ Add”.';
+                list.appendChild(empty);
+                return;
+            }
+
+            configs.forEach((cfg, i) => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                const header = document.createElement('div');
+                header.className = 'card-header';
+
+                const selectLabel = document.createElement('label');
+                selectLabel.className = 'select-template';
+                const select = document.createElement('input');
+                select.type = 'radio';
+                select.name = 'selected-template';
+                select.checked = cfg.Index === selectedIndex;
+                select.addEventListener('change', () => {
+                    selectedIndex = cfg.Index;
+                    requestSave();
+                });
+                selectLabel.append(select, document.createTextNode('Use this template'));
+
+                const deleteButton = document.createElement('button');
+                deleteButton.className = 'btn btn-delete';
+                deleteButton.textContent = 'Delete';
+                deleteButton.addEventListener('click', () => remove(i));
+
+                const prompt = document.createElement('textarea');
+                prompt.placeholder = 'Prompt template... use {{text}} as placeholder';
+                prompt.value = cfg.PromptTemplate || '';
+                prompt.addEventListener('input', () => {
+                    configs[i].PromptTemplate = prompt.value;
+                    requestSave();
+                });
+
+                header.append(selectLabel, deleteButton);
+                card.append(header, prompt);
+                list.appendChild(card);
+            });
+        }
+
+        function addCard() {
+            const nextIndex = configs.reduce((maxIndex, config) => {
+                return Math.max(maxIndex, config.Index);
+            }, 0) + 1;
+            configs.push({
+                Index: nextIndex,
+                PromptTemplate: ''
+            });
+            if (configs.length === 1) {
+                selectedIndex = nextIndex;
+            }
+            render();
+            requestSave();
+        }
+
+        function remove(i) {
+            const removedSelected = configs[i].Index === selectedIndex;
+            configs.splice(i, 1);
+            if (removedSelected && configs.length > 0) {
+                selectedIndex = configs[0].Index;
+            } else if (configs.length === 0) {
+                selectedIndex = 0;
+            }
+            render();
+            requestSave();
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                flushSave().then(saved => {
+                    if (saved) {
+                        window.closeWindow();
+                    }
+                });
+            }
+        });
+
+        function autoResizeTextarea(textarea) {
+            textarea.style.height = 'auto';
+            textarea.style.height = textarea.scrollHeight + 'px';
+        }
+
+        document.addEventListener('input', (e) => {
+            if (e.target.tagName.toLowerCase() === 'textarea') {
+                autoResizeTextarea(e.target);
+            }
+        });
+
+        const observer = new MutationObserver(() => {
+            document.querySelectorAll('textarea').forEach(textarea => {
+                autoResizeTextarea(textarea);
+            });
+        });
+        
+        observer.observe(document.getElementById('list'), { childList: true, subtree: true });
+
+        load();
+    </script>
+</body>
+</html>
