@@ -7,142 +7,6 @@ import (
 	"github.com/mxschmitt/playwright-go"
 )
 
-func OpenInputWindow() (string, bool) {
-	runOption := &playwright.RunOptions{
-		SkipInstallBrowsers: true,
-	}
-	err := playwright.Install(runOption)
-	if err != nil {
-		log.Printf("could not install playwright dependencies: %v", err)
-		return "", false
-	}
-	pw, err := playwright.Run()
-	if err != nil {
-		log.Printf("could not start playwright: %v", err)
-		return "", false
-	}
-	defer pw.Stop()
-
-	option := playwright.BrowserTypeLaunchOptions{
-		Channel:  playwright.String("chrome"),
-		Headless: playwright.Bool(false),
-		Args: []string{
-			"--window-size=300,200",
-		},
-	}
-	browser, err := pw.Chromium.Launch(option)
-	if err != nil {
-		log.Printf("could not launch browser: %v", err)
-		return "", false
-	}
-	context, err := browser.NewContext(playwright.BrowserNewContextOptions{
-		Viewport: &playwright.Size{
-			Width:  600,
-			Height: 200,
-		},
-	})
-
-	defer browser.Close()
-
-	page, err := context.NewPage()
-	if err != nil {
-		log.Printf("could not create page: %v", err)
-		return "", false
-	}
-	if err := page.SetContent(string(inputPage)); err != nil {
-		log.Printf("could not load input page: %v", err)
-		return "", false
-	}
-
-	if err := page.BringToFront(); err != nil {
-		log.Printf("Could not bring page to front: %v", err)
-	}
-
-	result, err := page.Evaluate(`() => {
-		return new Promise((resolve) => {
-			const textarea = document.querySelector('textarea');
-			textarea.focus();
-			
-			textarea.addEventListener('keydown', (e) => {
-				if (e.key === 'Enter' && !e.shiftKey) {
-					e.preventDefault();
-					const userInput = textarea.value;
-					resolve(userInput);
-				}
-			});
-		});
-	}`)
-	if err != nil {
-		if !page.IsClosed() {
-			log.Printf("Error reading input from page: %v", err)
-		}
-		return "", false
-	}
-	text, ok := result.(string)
-	if !ok {
-		log.Printf("input page returned an unexpected result")
-		return "", false
-	}
-	return text, true
-}
-
-func OpenBrowser(text string) {
-	runOption := &playwright.RunOptions{
-		SkipInstallBrowsers: true,
-	}
-	err := playwright.Install(runOption)
-	if err != nil {
-		log.Fatalf("could not install playwright dependencies: %v", err)
-	}
-	pw, err := playwright.Run()
-	if err != nil {
-		log.Fatalf("could not start playwright: %v", err)
-	}
-	option := playwright.BrowserTypeLaunchOptions{
-		Channel:  playwright.String("chrome"),
-		Headless: playwright.Bool(false),
-	}
-	browser, err := pw.Chromium.Launch(option)
-	if err != nil {
-		log.Fatalf("could not launch browser: %v", err)
-	}
-	page, err := browser.NewPage()
-	if err != nil {
-		log.Fatalf("could not create page: %v", err)
-	}
-	if _, err = page.Goto("https://gemini.google.com/app"); err != nil {
-		log.Fatalf("could not goto: %v", err)
-	}
-
-	InputGemini(text, page)
-}
-
-func InputGemini(text string, page playwright.Page) {
-	text = BuildFullPrompt(SelectedPromptTemplate(), text)
-	inputBox := page.Locator("div[contenteditable='true'][role='textbox']").First()
-
-	// Wait for it to be visible and ready
-	if err := inputBox.WaitFor(playwright.LocatorWaitForOptions{
-		State: playwright.WaitForSelectorStateVisible,
-	}); err != nil {
-		log.Fatalf("could not find input box: %v", err)
-	}
-
-	if err := inputBox.Click(); err != nil {
-		log.Fatalf("could not click input box: %v", err)
-	}
-
-	if err := inputBox.Fill(text); err != nil {
-		log.Fatalf("could not type text into input box: %v", err)
-	}
-
-	if err := page.Keyboard().Press("Enter"); err != nil {
-		log.Fatalf("could not press enter: %v", err)
-	}
-
-	select {}
-}
-
 func OpenConfigWindow() {
 	runOption := &playwright.RunOptions{
 		SkipInstallBrowsers: true,
@@ -176,9 +40,10 @@ func OpenConfigWindow() {
 	// ---------- expose Go functions to the page ----------
 	// Load all configs
 	err = page.ExposeBinding("loadConfigs", func(source *playwright.BindingSource, args ...interface{}) interface{} {
-		path := GetConfigJsonPath()
-		CreateConfigJson()
-		settings := readConfigSettings(path)
+		settings, err := ReadConfigSettings()
+		if err != nil {
+			return map[string]interface{}{"ok": false, "error": err.Error()}
+		}
 		configs := make([]map[string]interface{}, 0, len(settings.Configs))
 		for _, config := range settings.Configs {
 			configs = append(configs, map[string]interface{}{
@@ -187,6 +52,7 @@ func OpenConfigWindow() {
 			})
 		}
 		return map[string]interface{}{
+			"ok":            true,
 			"SelectedIndex": settings.SelectedIndex,
 			"Configs":       configs,
 		}
@@ -247,9 +113,8 @@ func OpenConfigWindow() {
 			return map[string]interface{}{"ok": false, "error": "empty config must not select a template"}
 		}
 
-		path := GetConfigJsonPath()
 		settings := ConfigSettings{SelectedIndex: int(selectedIndex), Configs: configs}
-		if err := writeConfigSettings(path, settings); err != nil {
+		if err := SaveConfigSettings(settings); err != nil {
 			return map[string]interface{}{"ok": false, "error": err.Error()}
 		}
 		return map[string]interface{}{"ok": true}
@@ -307,6 +172,3 @@ func configNumber(value interface{}) (float64, bool) {
 
 //go:embed pages/config.html
 var configPage []byte
-
-//go:embed pages/input.html
-var inputPage []byte

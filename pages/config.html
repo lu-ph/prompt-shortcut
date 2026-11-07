@@ -217,6 +217,9 @@
             const list = document.getElementById('list');
             try {
                 const settings = await window.loadConfigs();
+                if (!settings || settings.ok === false) {
+                    throw new Error((settings && settings.error) || 'Unknown load error');
+                }
                 configs = settings.Configs || [];
                 selectedIndex = settings.SelectedIndex || (configs[0] && configs[0].Index) || 0;
                 if (!configs.some(config => config.Index === selectedIndex) && configs.length > 0) {

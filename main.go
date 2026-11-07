@@ -3,73 +3,64 @@ package main
 import (
 	_ "embed"
 	"fmt"
-	"runtime"
 
-	"fyne.io/systray"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/driver/desktop"
 )
 
-//go:embed icon.ico
+//go:embed assets/icon.ico
 var trayIconICO []byte
 
-//go:embed icon.png
+//go:embed assets/icon.png
 var trayIconPNG []byte
 
+//go:embed assets/NotoSansSC-Regular.ttf
+var fontData []byte
+
 func main() {
-	systray.Run(onReady, onExit)
-}
+	a := app.New()
 
-func onReady() {
-	fmt.Println("--- start ---")
-	if runtime.GOOS == "windows" {
-		systray.SetIcon(trayIconICO)
-	} else {
-		systray.SetTemplateIcon(trayIconPNG, trayIconPNG)
+	if desk, ok := a.(desktop.App); ok {
+		iconRes := fyne.NewStaticResource("icon.png", trayIconPNG)
+		a.SetIcon(iconRes)
+
+		menu := fyne.NewMenu(
+			"Prompt Shortcut",
+			fyne.NewMenuItem("Prompt Templates", func() {
+				OpenConfigWindow()
+			}),
+		)
+		desk.SetSystemTrayMenu(menu)
 	}
-	systray.SetTitle("Prompr Shortcut")
-	systray.SetTooltip("Prompr Shortcut")
 
-	mSettings := systray.AddMenuItem("Prompt Templates", "Open prompt configuration settings")
-	mQuit := systray.AddMenuItem("Quit", "Quit the application")
+	hotkeyPressedChan := make(chan bool, 1)
+	RegisterHotkey(hotkeyPressedChan)
 
 	go func() {
-		for {
-			select {
-			case <-mSettings.ClickedCh:
-				fmt.Println("Menu clicked: Settings")
-				go OpenConfigWindow()
-			case <-mQuit.ClickedCh:
-				systray.Quit()
+		for pressed := range hotkeyPressedChan {
+			if pressed {
+				fmt.Println("hotkey pressed")
+
+				fyne.Do(func() {
+					inputWindow := CreateInputWindow(a, HandleUserInput)
+
+					inputWindow.Show()
+					inputWindow.RequestFocus()
+				})
 			}
 		}
 	}()
 
-	hotkeyPressedChan := make(chan bool, 1)
-	inputWindowClosedChan := make(chan struct{}, 1)
-
-	RegisterHotkey(hotkeyPressedChan)
-	inputWindowOpen := false
-	for {
-		select {
-		case pressed := <-hotkeyPressedChan:
-			if !pressed || inputWindowOpen {
-				continue
-			}
-			fmt.Println("hotkey pressed")
-			inputWindowOpen = true
-			go func() {
-				userInput, submitted := OpenInputWindow()
-				if submitted {
-					fmt.Println("received input: " + userInput)
-					go OpenBrowser(userInput)
-				}
-				inputWindowClosedChan <- struct{}{}
-			}()
-		case <-inputWindowClosedChan:
-			inputWindowOpen = false
-		}
-	}
+	a.Run()
 }
 
-func onExit() {
-	systray.Quit()
+func HandleUserInput(input string, canceled bool) {
+	if canceled {
+		fmt.Println("user canceled input")
+		return
+	}
+
+	fmt.Printf("user input received: %s\n", input)
+	go OpenBrowser(input)
 }

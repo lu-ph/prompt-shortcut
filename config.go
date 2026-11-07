@@ -2,18 +2,20 @@ package main
 
 import (
 	"encoding/json"
-	"log"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 )
 
-const CONFIG_FOLDER_NAME string = ".promptshortcut"
+const configFolderName = ".promptshortcut"
 
-const DEFAULT_PROMPT_TEMPLATE = `You are a professional native-level English translator and editor.
-Translate the following sentence into English and provide 3 different versions or natural alternatives. Match the tone of the user's original sentence. Do not include any introductory or concluding text.
+const defaultPromptTemplate = `You are a professional native-level English translator and editor.
+Translate the following sentence into English and provide different versions or natural alternatives. Match the tone of the user's original sentence. Do not include any introductory or concluding text.
 
 Sentence to translate: "{{}}"`
+
+var promptRe = regexp.MustCompile(`\{\{[^}]*\}\}`)
 
 type Config struct {
 	Index          int
@@ -25,55 +27,111 @@ type ConfigSettings struct {
 	Configs       []Config
 }
 
-// GetConfigJsonPath returns the full path to config.json inside CONFIG_FOLDER_NAME
-func GetConfigJsonPath() string {
+func getConfigJsonPath() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		log.Fatalf("could not get home directory: %v", err)
+		return "", fmt.Errorf("could not get home directory: %w", err)
 	}
-
-	dirPath := filepath.Join(homeDir, CONFIG_FOLDER_NAME)
-
-	if err := os.MkdirAll(dirPath, 0755); err != nil {
-		log.Fatalf("could not create config directory: %v", err)
-	}
-
-	return filepath.Join(dirPath, "config.json")
+	return filepath.Join(homeDir, configFolderName, "config.json"), nil
 }
 
-func CreateConfigJson() {
-	path := GetConfigJsonPath()
+func ensureConfigDir(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("could not create config directory: %w", err)
+	}
+	return nil
+}
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+func ReadConfigSettings() (ConfigSettings, error) {
+	path, err := getConfigJsonPath()
+	if err != nil {
+		return ConfigSettings{}, err
+	}
+
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
 		defaultSettings := ConfigSettings{
 			SelectedIndex: 1,
 			Configs: []Config{
-				{Index: 1, PromptTemplate: DEFAULT_PROMPT_TEMPLATE},
+				{Index: 1, PromptTemplate: defaultPromptTemplate},
 			},
 		}
-
-		data, err := json.MarshalIndent(defaultSettings, "", "  ")
-		if err != nil {
-			log.Fatalf("could not marshal default config: %v", err)
-		}
-
-		err = os.WriteFile(path, data, 0644)
-		if err != nil {
-			log.Fatalf("could not write config file: %v", err)
-		}
-		log.Println("Created default config.json successfully.")
+		err = SaveConfigSettings(defaultSettings)
+		return defaultSettings, err
+	} else if err != nil {
+		return ConfigSettings{}, fmt.Errorf("could not read config file: %w", err)
 	}
+
+	return parseConfig(path, data)
 }
 
-func Add(newConfig Config) {
-	path := GetConfigJsonPath()
-	CreateConfigJson()
-	settings := readConfigSettings(path)
+func parseConfig(path string, data []byte) (ConfigSettings, error) {
+	var value json.RawMessage
+	if err := json.Unmarshal(data, &value); err != nil {
+		return ConfigSettings{}, fmt.Errorf("could not parse config json: %w", err)
+	}
+
+	var settings ConfigSettings
+
+	if len(value) > 0 && value[0] == '[' {
+		var legacyConfigs []struct {
+			Config
+			Selected bool
+		}
+		if err := json.Unmarshal(value, &legacyConfigs); err != nil {
+			return ConfigSettings{}, fmt.Errorf("could not parse legacy config: %w", err)
+		}
+
+		for _, legacy := range legacyConfigs {
+			settings.Configs = append(settings.Configs, legacy.Config)
+			if legacy.Selected {
+				settings.SelectedIndex = legacy.Index
+			}
+		}
+		_ = SaveConfigSettings(settings)
+		return settings, nil
+	}
+
+	if err := json.Unmarshal(value, &settings); err != nil {
+		return ConfigSettings{}, fmt.Errorf("could not unmarshal config: %w", err)
+	}
+
+	if settings.SelectedIndex == 0 && len(settings.Configs) > 0 {
+		settings.SelectedIndex = settings.Configs[0].Index
+		_ = SaveConfigSettings(settings)
+	}
+
+	return settings, nil
+}
+
+func SaveConfigSettings(settings ConfigSettings) error {
+	path, err := getConfigJsonPath()
+	if err != nil {
+		return err
+	}
+
+	if err := ensureConfigDir(path); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("could not marshal config: %w", err)
+	}
+
+	return os.WriteFile(path, data, 0644)
+}
+
+func AddConfig(newConfig Config) error {
+	settings, err := ReadConfigSettings()
+	if err != nil {
+		return err
+	}
 
 	for _, cfg := range settings.Configs {
 		if cfg.Index == newConfig.Index {
-			log.Printf("Error: Config with Index %d already exists. Use Edit() instead.", newConfig.Index)
-			return
+			return fmt.Errorf("config with Index %d already exists", newConfig.Index)
 		}
 	}
 
@@ -81,17 +139,15 @@ func Add(newConfig Config) {
 	if len(settings.Configs) == 1 {
 		settings.SelectedIndex = newConfig.Index
 	}
-	if err := writeConfigSettings(path, settings); err != nil {
-		log.Fatalf("could not write config file: %v", err)
-	}
 
-	log.Printf("Successfully added new config with Index %d", newConfig.Index)
+	return SaveConfigSettings(settings)
 }
 
-func Delete(indexToDelete int) {
-	path := GetConfigJsonPath()
-	CreateConfigJson()
-	settings := readConfigSettings(path)
+func DeleteConfig(indexToDelete int) error {
+	settings, err := ReadConfigSettings()
+	if err != nil {
+		return err
+	}
 
 	var updatedConfigs []Config
 	found := false
@@ -104,8 +160,7 @@ func Delete(indexToDelete int) {
 	}
 
 	if !found {
-		log.Printf("Config with Index %d not found.", indexToDelete)
-		return
+		return fmt.Errorf("config with Index %d not found", indexToDelete)
 	}
 
 	settings.Configs = updatedConfigs
@@ -115,94 +170,28 @@ func Delete(indexToDelete int) {
 			settings.SelectedIndex = updatedConfigs[0].Index
 		}
 	}
-	if err := writeConfigSettings(path, settings); err != nil {
-		log.Fatalf("could not write config file: %v", err)
-	}
 
-	log.Printf("Successfully deleted config with Index %d", indexToDelete)
+	return SaveConfigSettings(settings)
 }
 
-func Read() []Config {
-	path := GetConfigJsonPath()
-	CreateConfigJson()
-	return readConfigSettings(path).Configs
-}
-
-func readConfigSettings(path string) ConfigSettings {
-	data, err := os.ReadFile(path)
+func SelectedPromptTemplate() (string, error) {
+	settings, err := ReadConfigSettings()
 	if err != nil {
-		log.Fatalf("could not read config file: %v", err)
+		return "", err
 	}
-
-	var value json.RawMessage
-	if err := json.Unmarshal(data, &value); err != nil {
-		log.Fatalf("could not parse config json: %v", err)
-	}
-
-	if len(value) > 0 && value[0] == '[' {
-		var legacyConfigs []struct {
-			Config
-			Selected bool
-		}
-		if err := json.Unmarshal(value, &legacyConfigs); err != nil {
-			log.Fatalf("could not parse legacy config json: %v", err)
-		}
-		settings := ConfigSettings{Configs: make([]Config, 0, len(legacyConfigs))}
-		for _, legacy := range legacyConfigs {
-			settings.Configs = append(settings.Configs, legacy.Config)
-			if legacy.Selected {
-				settings.SelectedIndex = legacy.Index
-			}
-		}
-		if settings.SelectedIndex == 0 && len(settings.Configs) > 0 {
-			settings.SelectedIndex = settings.Configs[0].Index
-		}
-		if err := writeConfigSettings(path, settings); err != nil {
-			log.Fatalf("could not migrate config file: %v", err)
-		}
-		return settings
-	}
-
-	var settings ConfigSettings
-	if err := json.Unmarshal(value, &settings); err != nil {
-		log.Fatalf("could not parse config json: %v", err)
-	}
-	if settings.SelectedIndex == 0 && len(settings.Configs) > 0 {
-		settings.SelectedIndex = settings.Configs[0].Index
-		if err := writeConfigSettings(path, settings); err != nil {
-			log.Fatalf("could not update config selection: %v", err)
-		}
-	}
-	return settings
-}
-
-func writeConfigSettings(path string, settings ConfigSettings) error {
-	data, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
-}
-
-func SelectedPromptTemplate() string {
-	path := GetConfigJsonPath()
-	CreateConfigJson()
-	settings := readConfigSettings(path)
 	for _, config := range settings.Configs {
 		if config.Index == settings.SelectedIndex {
-			return config.PromptTemplate
+			return config.PromptTemplate, nil
 		}
 	}
 	if len(settings.Configs) > 0 {
-		return settings.Configs[0].PromptTemplate
+		return settings.Configs[0].PromptTemplate, nil
 	}
-	return ""
+	return defaultPromptTemplate, nil
 }
 
 func BuildFullPrompt(template string, input string) string {
-	re := regexp.MustCompile(`\{\{[^}]*\}\}`)
-
-	return re.ReplaceAllStringFunc(template, func(string) string {
+	return promptRe.ReplaceAllStringFunc(template, func(string) string {
 		return input
 	})
 }
